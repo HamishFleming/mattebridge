@@ -1,0 +1,14 @@
+logLevel: info
+
+rtsp: yes
+rtmp: yes
+hls: yes
+webrtc: yes
+srt: yes
+api: yes
+
+paths:
+  all:
+    source: publisher
+authHTTPExclude:
+  - action: api
