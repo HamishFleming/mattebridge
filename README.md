@@ -8,8 +8,28 @@ It reads frames from a local webcam or a network stream, runs the matting engine
 - `rvm_runtime.py`: TensorRT 11 runtime with recurrent state handling.
 - `bridge_rvm_output.py`: helper that runs the runtime and republishes `/dev/video10`.
 - `rvm_remove_background_video.py`: processes a video file and writes a new video with the background removed.
+- `export_clean_onnx.py`: clean export path from the bundled RVM checkpoint to ONNX.
+- `build_engine.py`: builds the TensorRT engine from the cleaned ONNX export.
 - `rvm_fp16.engine`: TensorRT engine file expected by the runtime.
 - `modnet_runtime.py`: separate runtime for the MODNet ONNX/TensorRT model.
+- `RobustVideoMatting/`: vendored upstream source snapshot for the RVM model code and exporter reference.
+
+## Bundled Model Artifacts
+
+The repo includes the artifacts that were used while bringing the runtime up, so it is easier to remember what each file is for later:
+
+- `rvm_mobilenetv3.pth`: upstream PyTorch checkpoint for the MobileNetV3 RVM variant.
+- `rvm_simplified.onnx`: cleaned ONNX export used as the TensorRT build input.
+- `rvm_fp16.engine`: serialized TensorRT 11 engine built from `rvm_simplified.onnx`.
+- `rvm_mobilenetv3_fp16.onnx` and `rvm.onnx`: earlier export outputs kept for reference.
+- `modnet_photographic_portrait_matting.onnx`: separate MODNet model used by `modnet_runtime.py`.
+
+Rebuild the RVM artifacts in this order:
+
+```bash
+python export_clean_onnx.py
+python build_engine.py
+```
 
 ## Requirements
 
@@ -169,4 +189,23 @@ Note: `0.0.0.0` is only valid as a listen address for a server or receiver. It i
 - The runtime resizes every frame to `512x512`.
 - The output is written to `/dev/video10` via a YUYV v4l2loopback writer, and the bridge reads it back from that device as `yuyv422`.
 - The model keeps four recurrent state tensors between frames, so do not restart the process if you want stable temporal results.
+- The RVM runtime uses the MobileNetV3 checkpoint, not the upstream ResNet50 variant.
 - If `cv2.VideoCapture` cannot open your network stream, check that your OpenCV build has FFmpeg enabled.
+
+## Performance Notes
+
+What this setup does well:
+
+- Uses a fixed-shape TensorRT 11 engine, which keeps execution predictable and avoids per-frame graph rebuilding.
+- Preallocates pinned host buffers and device buffers, then reuses them for the whole run instead of allocating on every frame.
+- Runs inference asynchronously with `execute_async_v3`, so TensorRT and the CUDA stream can overlap work where the driver allows it.
+- Preserves the recurrent state tensors across frames, which is required for RVM quality and avoids resetting temporal context.
+- Keeps the deployment path simple: one engine, one fixed input size, and no dynamic-shape overhead in the hot path.
+
+What could be better:
+
+- Frame preprocessing is still CPU-bound: resize, color conversion, normalization, and transpose all happen on the host every frame.
+- Every frame still moves through host memory before inference, so there is room to reduce transfer overhead with a more GPU-centric pipeline.
+- The runtime depends on OpenCV capture and decode, which is convenient but not the fastest option for high-throughput streams.
+- The bridge path adds extra I/O and encode/decode work through `v4l2loopback` and `ffmpeg`, which is useful operationally but not optimal for raw latency.
+- The repo ships an FP16 engine, but there is no INT8 path yet for users who want to trade calibration work for more throughput.
